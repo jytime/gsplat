@@ -29,6 +29,9 @@ from gsplat.distributed import cli
 from gsplat.rendering import rasterization
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
 
+# 
+from plyfile import PlyData, PlyElement
+
 
 @dataclass
 class Config:
@@ -54,7 +57,7 @@ class Config:
     # A global scaler that applies to the scene size related parameters
     global_scale: float = 1.0
     # Normalize the world space
-    normalize_world_space: bool = True
+    normalize_world_space: bool = False
 
     # Port for the viewer server
     port: int = 8080
@@ -255,6 +258,7 @@ class Runner:
         self.device = f"cuda:{local_rank}"
 
         # Where to dump results.
+        self.result_dir = cfg.result_dir
         os.makedirs(cfg.result_dir, exist_ok=True)
 
         # Setup output directories.
@@ -265,6 +269,8 @@ class Runner:
         self.render_dir = f"{cfg.result_dir}/renders"
         os.makedirs(self.render_dir, exist_ok=True)
 
+        
+        
         # Tensorboard
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
 
@@ -649,6 +655,12 @@ class Runner:
                         data["app_module"] = self.app_module.module.state_dict()
                     else:
                         data["app_module"] = self.app_module.state_dict()
+
+                # save_ply
+                
+                self.ply_path = f"{self.result_dir}/ply_dir/ckpt_{step}_rank{self.world_rank}.ply"
+                self.save_ply(self.ply_path)
+                
                 torch.save(
                     data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
                 )
@@ -909,6 +921,44 @@ class Runner:
         return render_colors[0].cpu().numpy()
 
 
+
+    # Experimental
+    def construct_list_of_attributes(self):
+        l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
+        # All channels except the 3 DC
+        for i in range(self.splats["sh0"].shape[1]*self.splats["sh0"].shape[2]):
+            l.append('f_dc_{}'.format(i))
+        for i in range(self.splats["shN"].shape[1]*self.splats["shN"].shape[2]):
+            l.append('f_rest_{}'.format(i))
+        l.append('opacity')
+        for i in range(self.splats["scales"].shape[1]):
+            l.append('scale_{}'.format(i))
+        for i in range(self.splats["quats"].shape[1]):
+            l.append('rot_{}'.format(i))
+        return l
+
+    # Experimental
+    @torch.no_grad()
+    def save_ply(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        xyz = self.splats["means"].detach().cpu().numpy()
+        normals = np.zeros_like(xyz)
+        f_dc = self.splats["sh0"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        f_rest = self.splats["shN"].detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+        opacities = self.splats["opacities"].detach().unsqueeze(-1).cpu().numpy()
+        scale = self.splats["scales"].detach().cpu().numpy()
+        rotation = self.splats["quats"].detach().cpu().numpy()
+
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
+
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        elements[:] = list(map(tuple, attributes))
+        el = PlyElement.describe(elements, 'vertex')
+        PlyData([el]).write(path)
+
+
+
 def main(local_rank: int, world_rank, world_size: int, cfg: Config):
     if world_size > 1 and not cfg.disable_viewer:
         cfg.disable_viewer = True
@@ -987,3 +1037,4 @@ if __name__ == "__main__":
             )
 
     cli(main, cfg, verbose=True)
+
