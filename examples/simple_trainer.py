@@ -36,7 +36,7 @@ from plyfile import PlyData, PlyElement
 @dataclass
 class Config:
     # Disable viewer
-    disable_viewer: bool = False
+    disable_viewer: bool = True
     # Path to the .pt files. If provide, it will skip training and run evaluation only.
     ckpt: Optional[List[str]] = None
     # Name of compression strategy to use
@@ -70,9 +70,11 @@ class Config:
     # Number of training steps
     max_steps: int = 30_000
     # Steps to evaluate the model
-    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    # eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [30_000])
     # Steps to save the model
-    save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    # save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    save_steps: List[int] = field(default_factory=lambda: [30_000])
 
     # Initialization strategy
     init_type: str = "sfm"
@@ -1037,4 +1039,30 @@ if __name__ == "__main__":
             )
 
     cli(main, cfg, verbose=True)
+
+
+
+
+# python simple_trainer.py  default --compression png --data_dir /data/home/jianyuan/tmp/vggsfm/examples/20-4457-37840 --test_every 10 --data_factor 1 --result_dir ./results/debugcompress20445737840
+# python simple_trainer.py  mcmc --compression png --data_dir /data/home/jianyuan/tmp/vggsfm/examples/kitchen --test_every 10 --data_factor 1 --result_dir ./results/kitchecn_mcmc
+
+
+
+
+
+# /data/home/jianyuan/tmp/vggsfm/examples/20-4457-37840
+# python simple_trainer.py  default --compression png --data_dir /data/home/jianyuan/tmp/vggsfm/examples/kitchen --test_every 10 --data_factor 1 --result_dir ./results/debugcompress --ckpt /data/home/jianyuan/GS/gsplat/examples/results/debugcompress/ckpts/ckpt_6999_rank0.pt
+
+
+# pip install "setuptools<58.5"
+
+# export LD_LIBRARY_PATH=/fsx-repligen/jianyuan/miniconda3/envs/gs_310/lib:$LD_LIBRARY_PATH
+
+# python simple_trainer.py  default --data_dir /data/home/jianyuan/tmp/vggsfm/examples/kitchen --test_every 10 --data_factor 1 --result_dir ./results/hey
+
+
+
+
+# sh_degree
+
 
