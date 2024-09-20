@@ -15,7 +15,7 @@ import tyro
 import viser
 import yaml
 from datasets.colmap import Dataset, Parser
-from datasets.traj import generate_interpolated_path, generate_ellipse_path_z
+from datasets.traj import generate_interpolated_path, generate_ellipse_path_z, generate_ellipse_path_y
 from torch import Tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
@@ -27,8 +27,9 @@ from utils import AppearanceOptModule, CameraOptModule, knn, rgb_to_sh, set_rand
 from gsplat.compression import PngCompression
 from gsplat.distributed import cli
 from gsplat.rendering import rasterization
-from gsplat.strategy import DefaultStrategy, MCMCStrategy
+from gsplat.strategy import MCMCStrategy
 
+from custom_strategy import DefaultStrategy
 # 
 from plyfile import PlyData, PlyElement
 
@@ -144,6 +145,9 @@ class Config:
     tb_every: int = 100
     # Save training images to tensorboard
     tb_save_image: bool = False
+
+    # Cap the maximum number of Gaussians for default strategy
+    default_cap_max: Optional[int] = None
 
     lpips_net: Literal["vgg", "alex"] = "alex"
 
@@ -675,6 +679,7 @@ class Runner:
                     step=step,
                     info=info,
                     packed=cfg.packed,
+                    cap_max=cfg.default_cap_max,
                 )
             elif isinstance(self.cfg.strategy, MCMCStrategy):
                 self.cfg.strategy.step_post_backward(
@@ -792,6 +797,11 @@ class Runner:
             ellipse_time /= len(valloader)
 
             psnr = torch.stack(metrics["psnr"]).mean()
+                            
+            # python simple_trainer.py mcmc --compression png --test_every 10 --data_factor 1 --strategy.cap-max 250000 --data_dir 121-25137-22336/gsplat --result_dir 121-25137-22336/gsplat_output --ckpt 121-25137-22336/gsplat_output/ckpts/ckpt_29999_rank0.pt
+            # init_type
+            # python simple_trainer.py mcmc --compression png --test_every 10 --data_factor 1 --strategy.cap-max 250000 --data_dir 134-54847-43682/mapper_output/gsplat --result_dir 134-54847-43682/mapper_output/gsplat_output_new --init_type random
+
             ssim = torch.stack(metrics["ssim"]).mean()
             lpips = torch.stack(metrics["lpips"]).mean()
             print(
@@ -821,12 +831,101 @@ class Runner:
         cfg = self.cfg
         device = self.device
 
-        camtoworlds_all = self.parser.camtoworlds[5:-5]
-        if cfg.render_traj_path == "interp":
+        
+        if cfg.render_traj_path == "circlein3d":
+            from pytorch3d.implicitron.tools.circle_fitting import fit_circle_in_3d
+            from datasets.traj import viewmatrix, focus_point_fn
+            camtoworlds_all = self.parser.camtoworlds
+            scene_center = focus_point_fn(camtoworlds_all)
+            camera_centers = camtoworlds_all[:, :3, 3]
+            n_eval_cams = 200
+            camera_centers = torch.from_numpy(camera_centers).float().to(device)
+            angle = torch.linspace(0, 2.0 * math.pi, n_eval_cams).to(camera_centers)
+
+            up_dir = (0.0, 0.0, 1.0)
+
+            fit = fit_circle_in_3d(camera_centers, angles=angle, offset=None, up=angle.new_tensor(up_dir), ) 
+            
+            traj = fit.generated_points
+            
+            trajectory_scale = 1.0
+            _t_mu = traj.mean(dim=0, keepdim=True)
+            traj = (traj - _t_mu) * trajectory_scale + _t_mu
+
+            
+            if False:
+                from pytorch3d.implicitron.tools import model_io, vis_utils
+
+                viz = vis_utils.get_visdom_connection(server=f"http://10.200.249.103", port=10088)
+                from pytorch3d.structures import Pointclouds
+                from pytorch3d.vis.plotly_vis import plot_scene
+                camera_centers_pc = Pointclouds(points=camera_centers[None])
+                traj_pc = Pointclouds(points=traj[None])
+
+                center_pc = Pointclouds(points=torch.from_numpy(scene_center[None][None]).float().to(device))
+                scene = {"camera_centers": camera_centers_pc, "traj": traj_pc, "center": center_pc}
+                fig = plot_scene({f"haha": scene})
+
+                viz.plotlyplot(fig, env="visual", win="pointcloud")
+                
+            if False:
+                avg_up = camtoworlds_all[:, :3, 1].mean(0)
+                avg_up = avg_up / np.linalg.norm(avg_up)
+                ind_up = np.argmax(np.abs(avg_up))
+                up_dir = np.eye(3)[ind_up] * np.sign(avg_up[ind_up])
+            else:
+                up_dir = np.array(up_dir)
+                
+            positions = traj.cpu().numpy()
+            camtoworlds_all =  np.stack([viewmatrix(scene_center - p, up_dir, p) for p in positions])
+
+            
+        elif cfg.render_traj_path == "pt3d":
+            # WRONG WRONG WRONG WRONG WRONG 
+            
+            from pytorch3d.utils.camera_conversions import cameras_from_opencv_projection, opencv_from_cameras_projection
+            from pytorch3d.implicitron.tools.eval_video_trajectory import ( generate_eval_video_cameras, )
+            # from pytorch3d.projects.nerf.nerf.eval_video_utils import ( generate_eval_video_cameras, )
+            
+            camtoworlds_all = self.parser.camtoworlds
+            camfromworlds_all = np.linalg.inv(camtoworlds_all)
+            camfromworlds_all = torch.from_numpy(camfromworlds_all).float().to(device)
+            
+            # FORCED ASSUMPTION: only one camera
+            camera_matrix = torch.from_numpy(self.parser.Ks_dict[0]).float().to(device)
+            camera_matrix = camera_matrix[None].expand(len(camfromworlds_all), -1, -1)
+            
+            width, height = self.parser.imsize_dict[0]
+            image_size = torch.tensor([height, width]).float().to(device)
+            image_size = image_size[None].expand(len(camfromworlds_all), -1)
+            
+            
+            traj_cameras = cameras_from_opencv_projection(camfromworlds_all[:, :3,:3], camfromworlds_all[:,:3,3], camera_matrix, image_size)
+            traj_cameras = traj_cameras.cpu()
+            
+            test_cameras = generate_eval_video_cameras(traj_cameras, 100, trajectory_type="circular_lsq_fit")
+            
+            import pdb; pdb.set_trace()
+            
+            image_size_test = image_size[0:1].expand(len(test_cameras), -1)
+            R, tvec, camera_matrix = opencv_from_cameras_projection(test_cameras, image_size_test)
+            
+            camfromworlds_test = np.concatenate([R.cpu().numpy(), tvec.cpu().numpy()[...,None]], axis=-1)
+            # camtoworlds_all = np.linalg.inv(camfromworlds_test)
+            camtoworlds_all = np.eye(4)[None].repeat(len(camfromworlds_test), axis=0)
+            camtoworlds_all[:, :3, :4] = camfromworlds_test
+            camtoworlds_all = np.linalg.inv(camtoworlds_all)
+            camtoworlds_all = camtoworlds_all[:,:3,:]
+            # NOTE a bug here
+            
+        elif cfg.render_traj_path == "interp":
+            camtoworlds_all = self.parser.camtoworlds[5:-5]
             camtoworlds_all = generate_interpolated_path(
                 camtoworlds_all, 1
             )  # [N, 3, 4]
         elif cfg.render_traj_path == "ellipse":
+            camtoworlds_all = self.parser.camtoworlds[5:-5]
+            # camtoworlds_all = generate_ellipse_path_y(camtoworlds_all)
             height = camtoworlds_all[:, 2, 3].mean()
             camtoworlds_all = generate_ellipse_path_z(
                 camtoworlds_all, height=height
@@ -1064,5 +1163,30 @@ if __name__ == "__main__":
 
 
 # sh_degree
+
+
+
+
+# python simple_trainer.py mcmc --eval_steps 7000 30000 --test_every 10 --data_factor 1 --strategy.cap-max 250000 --data_dir 134-54847-43682/mapper_output/gsplat --result_dir debue_134 
+
+
+
+# TODO
+# 1. mcmc or not
+
+# python simple_trainer.py default --compression png --test_every 10 --data_factor 1 --data_dir 134-54847-43682/mapper_output/gsplat --result_dir debue_134
+
+# 2. normalize or not
+# python simple_trainer.py mcmc --compression png --normalize_world_space --test_every 10 --data_factor 1 --strategy.cap-max 250000 --data_dir 134-54847-43682/mapper_output/gsplat --result_dir debue_134_normalize 
+
+
+# 3. SIMPLERADIO OR SIMPLEPINHOLE?
+
+
+
+
+
+
+# python simple_trainer.py mcmc --compression png --test_every 10 --data_factor 1 --strategy.cap-max 250000 --data_dir 121-25137-22336/gsplat --result_dir 121-25137-22336/gsplat_output --ckpt 121-25137-22336/gsplat_output/ckpts/ckpt_29999_rank0.pt --render_traj_path pt3d
 
 
