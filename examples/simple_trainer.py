@@ -664,8 +664,8 @@ class Runner:
 
                 # save_ply
                 
-                self.ply_path = f"{self.result_dir}/ply_dir/ckpt_{step}_rank{self.world_rank}.ply"
-                self.save_ply(self.ply_path)
+                # self.ply_path = f"{self.result_dir}/ply_dir/ckpt_{step}_rank{self.world_rank}.ply"
+                # self.save_ply(self.ply_path)
                 
                 torch.save(
                     data, f"{self.ckpt_dir}/ckpt_{step}_rank{self.world_rank}.pt"
