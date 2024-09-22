@@ -31,7 +31,7 @@ from gsplat.strategy import MCMCStrategy
 
 from custom_strategy import DefaultStrategy
 # 
-from plyfile import PlyData, PlyElement
+# from plyfile import PlyData, PlyElement
 
 
 @dataclass
