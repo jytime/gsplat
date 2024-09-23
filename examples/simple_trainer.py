@@ -48,11 +48,11 @@ class Config:
     # Path to the Mip-NeRF 360 dataset
     data_dir: str = "data/360_v2/garden"
     # Downsample factor for the dataset
-    data_factor: int = 4
+    data_factor: int = 1
     # Directory to save results
     result_dir: str = "results/garden"
     # Every N images there is a test image
-    test_every: int = 8
+    test_every: int = 10
     # Random crop size for training  (experimental)
     patch_size: Optional[int] = None
     # A global scaler that applies to the scene size related parameters
@@ -150,6 +150,7 @@ class Config:
     default_cap_max: Optional[int] = None
 
     lpips_net: Literal["vgg", "alex"] = "alex"
+
 
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
@@ -433,7 +434,16 @@ class Runner:
         else:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
 
+            # (Pdb) colors[:,0].max()                                                                                                                 
+            # tensor(1.0008, device='cuda:0')                                                                                                    
+            # (Pdb) colors.mean()                                                                                                                
+            # tensor(0.2820, device='cuda:0')                                                                                                    
+            # (Pdb) colors.max()                                                                                                                 
+            # tensor(7.2330, device='cuda:0')                                                                                                    
+
+
         rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
+
         render_colors, render_alphas, info = rasterization(
             means=means,
             quats=quats,
